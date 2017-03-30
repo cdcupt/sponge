@@ -12,13 +12,11 @@
 #include <pthread.h> //pthread线程库
 #include <ctype.h> //isspace函数
 #include <sys/stat.h> //stat函数
+#include "include/web.h"
 
 #include <signal.h>
 
-#define SERV "0.0.0.0"
-#define QUEUE 20
-#define BUFF_SIZE 1024
-#define ISspace(x) isspace((int)(x))
+pthread_mutex_t mlock = PTHREAD_MUTEX_INITIALIZER;
 
 
 typedef struct doc_type{
@@ -50,34 +48,35 @@ const char *unimplemented =
          "</BODY></HTML>\r\n";
 
 const char *not_found =
-          "HTTP/1.0 404 NOT FOUND\r\n"
-          "Server: cdcupt's Server\r\n"
-          "Content-Type: text/html\r\n\r\n"
-          "<HTML><TITLE>Not Found</TITLE>\r\n"
-          "<BODY><P>The server could not fulfill\r\n"
-          "your request because the resource specified\r\n"
-          "is unavailable or nonexistent.\r\n"
-          "</BODY></HTML>\r\n";
+        "HTTP/1.0 404 NOT FOUND\r\n"
+        "Server: cdcupt's Server\r\n"
+        "Content-Type: text/html\r\n\r\n"
+        "<HTML><TITLE>Not Found</TITLE>\r\n"
+        "<BODY><P>The server could not fulfill\r\n"
+        "your request because the resource specified\r\n"
+        "is unavailable or nonexistent.\r\n"
+        "</BODY></HTML>\r\n";
 
 const char *cannot_execute =
-           "HTTP/1.0 500 Internal Server Error\r\n"
-           "Content-type: text/html\r\n\r\n"
-           "<P>Error prohibited CGI execution.\r\n";
+        "HTTP/1.0 500 Internal Server Error\r\n"
+        "Content-type: text/html\r\n\r\n"
+        "<P>Error prohibited CGI execution.\r\n";
 
 const char *bad_request =
-            "HTTP/1.0 400 BAD REQUEST\r\n"
-            "Content-type: text/html\r\n\r\n"
-            "<P>Your browser sent a bad request, "
-            "such as a POST without a Content-Length.\r\n";
+        "HTTP/1.0 400 BAD REQUEST\r\n"
+        "Content-type: text/html\r\n\r\n"
+        "<P>Your browser sent a bad request, "
+        "such as a POST without a Content-Length.\r\n";
 
 const char *headers =
-            "HTTP/1.0 200 OK\r\n"
-            "Server: cdcupt's Server\r\n"
-            "Accept-Ranges: bytes\r\n"
-            "Connection: Keep-Alive\r\n"
-            "Content-Type: text/html\r\n\r\n";
+        "HTTP/1.0 200 OK\r\n"
+        "Server: cdcupt's Server\r\n"
+        "Accept-Ranges: bytes\r\n"
+        "Connection: Keep-Alive\r\n"
+        "Content-Type: text/html\r\n\r\n";
 
 int sockfd = -1;
+static int nthreads = 10;
 
 void handle_signal(int sign); // 退出信号处理
 void http_send(int sock_client,const char *content); // http 发送相应报文
@@ -86,34 +85,55 @@ void error_die(const char *sc);
 int startup(u_short *port);
 void cat(int client, FILE *resource);
 int get_line(int sock, char *buf, int size);
-void *accept_request(void *client);
+void accept_request(int client);
+void thread_main(void *arg);
+void thread_make(int i);
 
 int main(){
         u_short port = 0;
-        int sock_client = -1;
-        pthread_t tid;
-        signal(SIGINT,handle_signal);
+        int i;
 
         sockfd = startup(&port);
         printf("server running on port %d\n", port);
 
-        // 客户端信息
-        struct sockaddr_in claddr;
-        socklen_t length = sizeof(claddr);
-
-        while(1){
-                sock_client = accept(sockfd,(struct sockaddr *)&claddr, &length);
-                if( sock_client <0 ){
-                        error_die("accept error");
-                }
-
-                if (pthread_create(&tid , NULL, &accept_request, (void *)sock_client) != 0)
-                    perror("pthread_create");
-
+        tptr = calloc(nthreads, sizeof(Thread));
+        for(i=0; i<nthreads; ++i){
+            thread_make(i);
         }
 
-        close(sock_client);
+        signal(SIGINT,handle_signal);
+
+        while(1){
+            pause();
+        }
+
         exit(0);
+}
+
+void thread_main(void *arg){
+    int sock_client = -1;
+
+    // 客户端信息
+    struct sockaddr_in claddr;
+    socklen_t length = sizeof(claddr);
+
+    while(1){
+        pthread_mutex_lock(&mlock);
+        sock_client = accept(sockfd,(struct sockaddr *)&claddr, &length);
+        if( sock_client <0 ){
+            error_die("accept error");
+        }
+        pthread_mutex_unlock(&mlock);
+
+        tptr[(int)arg].count++;
+        accept_request(sock_client);
+        close(sock_client);
+    }
+}
+
+void thread_make(int i){
+    if (pthread_create(&tptr[i].tid , NULL, &thread_main, (void *) i) != 0)
+        perror("pthread_create");
 }
 
 void *http_response(void *sock_client){
@@ -244,7 +264,7 @@ void serve_file(int client, const char *filename)
     fclose(resource);
 }
 
-void *accept_request(void *client)             //请求方法：空格：URL：协议版本：/r/n   请求行
+void accept_request(int client)             //请求方法：空格：URL：协议版本：/r/n   请求行
 {
     char buf[1024];
     int numchars;
@@ -270,7 +290,7 @@ void *accept_request(void *client)             //请求方法：空格：URL：�
     {
 
         send((int)client,unimplemented,sizeof(unimplemented),0);             //change
-        return 0;
+        return;
     }
 
     if (strcasecmp(method, "POST") == 0)
@@ -322,5 +342,5 @@ void *accept_request(void *client)             //请求方法：空格：URL：�
     }
 
     close((int)client);
-    return 0;
+    return;
 }
