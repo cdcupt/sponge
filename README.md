@@ -60,3 +60,6 @@ CGI支持：
 
  - 在子进程中，把 STDOUT 重定向到 cgi_outputt 的写入端，把 STDIN 重定向到 cgi_input 的读取端，关闭 cgi_input 的写入端 和 cgi_output 的读取端
  - 在父进程中，关闭 cgi_input 的读取端 和 cgi_output 的写入端，如果 POST 的话，把 POST 数据写入 cgi_input，已被重定向到 STDIN，读取 cgi_output 的管道输出到客户端，该管道输入是 STDOUT。
+
+## 2017.4.9:
+在池中增加epoll复用，ET模式需使用非阻塞I/O模型，将get_line改为非阻塞I/O，异步多线程的示例运行正常。参考半同步半异步模型，计划主线程处理I/O请求，业务逻辑分离给池内线程完成，但本项目涉及业务较为简单，故采用将epoll封装在池内线程内。

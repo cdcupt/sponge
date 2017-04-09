@@ -13,6 +13,8 @@
 #include <ctype.h> //isspace函数
 #include <sys/stat.h> //stat函数
 #include <sys/wait.h> //waitpid函数
+#include <sys/epoll.h> //epoll支持
+#include <errno.h>
 #include "include/web.h"
 
 #include <signal.h>
@@ -76,9 +78,6 @@ const char *headers =
         "Connection: Keep-Alive\r\n"
         "Content-Type: text/html\r\n\r\n";*/
 
-int sockfd = -1;
-static int nthreads = 10;
-
 void headers(int client, const char *filename);
 void cat(int client, FILE *resource);
 void bad_request(int client);
@@ -91,11 +90,33 @@ void *http_response(void *sock_client);     //http应答
 void error_die(const char *sc);
 int startup(u_short *port);
 int get_line(int sock, char *buf, int size);
+//int get_line_noblock(int sock, char *buf, int size); //非阻塞版本
+void serve_file(int client, const char *filename);
 void execute_cgi(int client, const char *path,
                  const char *method, const char *query_string);
 void accept_request(int client);
 void thread_main(void *arg);
 void thread_make(int i);
+
+//epoll
+void setnonblocking(int sock);
+void epoll_loop(void* arg);
+
+int sockfd = -1;
+static int nthreads = 10;
+
+//声明epoll_event结构体的变量,ev用于注册事件,数组用于回传要处理的事件
+
+struct epoll_event ev,events[1024];
+int epfd;
+int sock_op=1;
+struct sockaddr_in address;
+int n;
+int i;
+char buf[512];
+int off;
+int result;
+char *p;
 
 int main(){
         u_short port = 0;
@@ -116,6 +137,119 @@ int main(){
         }
 
         exit(0);
+}
+
+void setnonblocking(int sock)
+{
+    int opts;
+    opts=fcntl(sock,F_GETFL);
+    if(opts<0)
+    {
+         perror("fcntl(sock,GETFL)");
+         exit(1);
+    }
+   opts = opts|O_NONBLOCK;
+    if(fcntl(sock,F_SETFL,opts)<0)
+    {
+         perror("fcntl(sock,SETFL,opts)");
+         exit(1);
+    }
+}
+
+//epoll检测循环
+void epoll_loop(void* arg)
+{
+    while(1)
+    {
+        n=epoll_wait(epfd,events,4096,-1);  //等待epoll事件的发生
+
+        if(n>0)
+        {
+            for(i=0;i<n;++i)
+            {
+                if(events[i].data.fd==sockfd) //如果新监测到一个SOCKET用户连接到了绑定的SOCKET端口，建立新的连接。
+                {
+
+                    pthread_mutex_lock(&mlock);
+                    ev.data.fd=accept(sockfd,NULL,NULL);
+                    if(ev.data.fd>0)
+                    {
+                        setnonblocking(ev.data.fd);
+                        ev.events=EPOLLIN|EPOLLET;
+                        epoll_ctl(epfd,EPOLL_CTL_ADD,ev.data.fd,&ev);
+                    }
+                    else
+                    {
+                        if(errno==EAGAIN)
+                            break;
+                    }
+                    pthread_mutex_unlock(&mlock);
+
+                    tptr[(int)arg].count++;
+                }
+                else
+                {
+                    if(events[i].events&EPOLLIN)
+                    {
+                        accept_request(events[i].data.fd);
+                        epoll_ctl(epfd, EPOLL_CTL_DEL, events[i].data.fd, &ev);
+                        close(events[i].data.fd);
+                    }
+                    else if(events[i].events&EPOLLOUT)
+                    {
+                        serve_file(events[i].data.fd, "webdocs/index.html");
+                        close(events[i].data.fd);
+                    }
+                    else
+                    {
+                        close(events[i].data.fd);
+                    }
+                }
+            }
+        }
+    }
+
+}
+
+int get_line(int sock, char *buf, int size)
+{
+    int i = 0;
+    char c = '\0';
+    int n;
+
+    while ((i < size - 1) && (c != '\n'))
+    {
+        n = recv(sock, &c, 1, 0);
+        if (n > 0)
+        {
+            if (c == '\r')
+            {
+                n = recv(sock, &c, 1, 0);
+                if(n<=0 || c!='\n'){
+                    c = '\n';
+                }
+            }
+            buf[i] = c;
+            i++;
+        }
+        else{
+            if(errno == EAGAIN)
+            {
+                c = '\n';
+                printf("EAGAIN\n");
+                break;
+            }
+            else{
+                printf("recv error!\n");
+                epoll_ctl(epfd, EPOLL_CTL_DEL, events[i].data.fd, &ev);
+                close(events[i].data.fd);
+                break;
+            }
+        }
+    }
+    buf[i] = '\0';
+
+    return(i);
 }
 
 void thread_main(void *arg){
@@ -143,7 +277,7 @@ void thread_main(void *arg){
 }
 
 void thread_make(int i){
-    if (pthread_create(&tptr[i].tid , NULL, &thread_main, (void *) i) != 0)
+    if (pthread_create(&tptr[i].tid , NULL, &epoll_loop, (void *) i) != 0)
         perror("pthread_create");
 }
 
@@ -180,6 +314,15 @@ int startup(u_short *port)
     int sockfd = 0;
     // 定义 socket
     sockfd = socket(AF_INET,SOCK_STREAM,0);
+
+    /****************************************************///epoll初始化
+    epfd=epoll_create(65535);
+    setnonblocking(sockfd); //epoll支持  I/O非阻塞
+    ev.data.fd=sockfd;    //设置要处理的事件类型
+    ev.events=EPOLLIN|EPOLLET;  //ev.events=EPOLLIN;
+    epoll_ctl(epfd,EPOLL_CTL_ADD,sockfd,&ev);
+    /****************************************************/
+
     // 定义 sockaddr_in
     struct sockaddr_in skaddr;
     skaddr.sin_family = AF_INET; // ipv4
@@ -209,7 +352,7 @@ void error_die(const char *sc)
     exit(1);
 }
 
-int get_line(int sock, char *buf, int size)
+/*int get_line(int sock, char *buf, int size)
 {
     int i = 0;
     char c = '\0';
@@ -218,13 +361,13 @@ int get_line(int sock, char *buf, int size)
     while ((i < size - 1) && (c != '\n'))
     {
         n = recv(sock, &c, 1, 0);
-        /* DEBUG printf("%02X\n", c); */
+
         if (n > 0)
         {
             if (c == '\r')
             {
                 n = recv(sock, &c, 1, MSG_PEEK);
-                /* DEBUG printf("%02X\n", c); */
+
                 if ((n > 0) && (c == '\n'))
                     recv(sock, &c, 1, 0);
                 else
@@ -239,7 +382,7 @@ int get_line(int sock, char *buf, int size)
     buf[i] = '\0';
 
     return(i);
-}
+}*/
 
 void cat(int client, FILE *resource)
 {
@@ -427,7 +570,7 @@ void accept_request(int client)             //请求方法：空格：URL：协�
     }
 
     sprintf(path, "webdocs%s", url);
-    printf("source path : %s\n", path);
+    //printf("source path : %s\n", path);
     if (path[strlen(path) - 1] == '/')
         strcat(path, "index.html");
     if (stat(path, &st) == -1) {
@@ -447,7 +590,7 @@ void accept_request(int client)             //请求方法：空格：URL：协�
             cgi = 1;
         if (!cgi){
             serve_file((int)client, path);
-            printf("final path : %s\n", path);
+            //printf("final path : %s\n", path);
         }
         else
             execute_cgi((int)client, path, method, query_string);
