@@ -19,6 +19,8 @@
 
 #include <signal.h>
 
+#include <iostream>
+
 pthread_mutex_t mlock = PTHREAD_MUTEX_INITIALIZER;
 
 
@@ -27,11 +29,11 @@ typedef struct doc_type{
         char *value;
 }HTTP_CONTENT_TYPE;
 
-HTTP_CONTENT_TYPE http_content_type[] = {
+/*HTTP_CONTENT_TYPE http_content_type[] = {
         { "html","text/html" },
         { "gif" ,"image/gif" },
         { "jpeg","image/jpeg" }
-};
+};*/
 
 const char *http_res_tmpl =
         "HTTP/1.1 200 OK\r\n"
@@ -49,7 +51,6 @@ const char *http_res_tmpl =
          "</TITLE></HEAD>\r\n"
          "<BODY><P>HTTP request method not supported.\r\n"
          "</BODY></HTML>\r\n";
-
 const char *not_found =
         "HTTP/1.0 404 NOT FOUND\r\n"
         "Server: cdcupt's Server\r\n"
@@ -59,18 +60,15 @@ const char *not_found =
         "your request because the resource specified\r\n"
         "is unavailable or nonexistent.\r\n"
         "</BODY></HTML>\r\n";
-
 const char *cannot_execute =
         "HTTP/1.0 500 Internal Server Error\r\n"
         "Content-type: text/html\r\n\r\n"
         "<P>Error prohibited CGI execution.\r\n";
-
 const char *bad_request =
         "HTTP/1.0 400 BAD REQUEST\r\n"
         "Content-type: text/html\r\n\r\n"
         "<P>Your browser sent a bad request, "
         "such as a POST without a Content-Length.\r\n";
-
 const char *headers =
         "HTTP/1.0 200 OK\r\n"
         "Server: cdcupt's Server\r\n"
@@ -100,7 +98,7 @@ void thread_make(int i);
 
 //epoll
 void setnonblocking(int sock);
-void epoll_loop(void* arg);
+void *epoll_loop(void* arg);
 
 int sockfd = -1;
 static int nthreads = 10;
@@ -118,6 +116,8 @@ int off;
 int result;
 char *p;
 
+Thread *tptr = Thread::GetThreads(nthreads);
+
 int main(){
         u_short port = 0;
         int i;
@@ -125,7 +125,6 @@ int main(){
         sockfd = startup(&port);
         printf("server running on port %d\n", port);
 
-        tptr = calloc(nthreads, sizeof(Thread));
         for(i=0; i<nthreads; ++i){
             thread_make(i);
         }
@@ -148,7 +147,7 @@ void setnonblocking(int sock)
          perror("fcntl(sock,GETFL)");
          exit(1);
     }
-   opts = opts|O_NONBLOCK;
+    opts = opts|O_NONBLOCK;
     if(fcntl(sock,F_SETFL,opts)<0)
     {
          perror("fcntl(sock,SETFL,opts)");
@@ -157,7 +156,7 @@ void setnonblocking(int sock)
 }
 
 //epoll检测循环
-void epoll_loop(void* arg)
+void *epoll_loop(void* arg)
 {
     while(1)
     {
@@ -185,7 +184,7 @@ void epoll_loop(void* arg)
                     }
                     pthread_mutex_unlock(&mlock);
 
-                    tptr[(int)arg].count++;
+                    tptr[(long)arg].upperCount();
                 }
                 else
                 {
@@ -259,7 +258,7 @@ void thread_main(void *arg){
     struct sockaddr_in claddr;
     socklen_t length = sizeof(claddr);
 
-    printf("Thread %d starting\n", (int) arg);
+    printf("Thread %ld starting\n", (long) arg);
     while(1){
         pthread_mutex_lock(&mlock);
         sock_client = accept(sockfd,(struct sockaddr *)&claddr, &length);
@@ -268,16 +267,17 @@ void thread_main(void *arg){
         }
         pthread_mutex_unlock(&mlock);
 
-        tptr[(int)arg].count++;
-        printf("Thread %d doing work\n", (int) arg);
+        tptr[(long)arg].upperCount();
+        printf("Thread %ld doing work\n", (long) arg);
         accept_request(sock_client);
         close(sock_client);
-        printf("Thread %d done\n", (int) arg);
+        printf("Thread %ld done\n", (long) arg);
     }
 }
 
 void thread_make(int i){
-    if (pthread_create(&tptr[i].tid , NULL, &epoll_loop, (void *) i) != 0)
+    pthread_t tid = tptr[i].getTid();
+    if (pthread_create(&tid , NULL, epoll_loop, (void *) i) != 0)
         perror("pthread_create");
 }
 
@@ -285,11 +285,10 @@ void *http_response(void *sock_client){
     pthread_detach(pthread_self());
 
     char buff[BUFF_SIZE];
-    int len;
 
     memset(buff, 0, sizeof(buff));
-    len = recv((int)sock_client, buff, sizeof(buff),0);
-    http_send((int)sock_client, "Hello World!");
+    int len = recv((long)sock_client, buff, sizeof(buff),0);
+    http_send((long)sock_client, "Hello World!");
 
     return 0;
 }
@@ -357,17 +356,14 @@ void error_die(const char *sc)
     int i = 0;
     char c = '\0';
     int n;
-
     while ((i < size - 1) && (c != '\n'))
     {
         n = recv(sock, &c, 1, 0);
-
         if (n > 0)
         {
             if (c == '\r')
             {
                 n = recv(sock, &c, 1, MSG_PEEK);
-
                 if ((n > 0) && (c == '\n'))
                     recv(sock, &c, 1, 0);
                 else
@@ -380,7 +376,6 @@ void error_die(const char *sc)
             c = '\n';
     }
     buf[i] = '\0';
-
     return(i);
 }*/
 
