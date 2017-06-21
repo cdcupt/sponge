@@ -15,7 +15,8 @@
 #include <sys/wait.h> //waitpid函数
 #include <sys/epoll.h> //epoll支持
 #include <errno.h>
-#include "include/web.h"
+#include "web.h"
+#include "epoll.h"
 
 #include <signal.h>
 
@@ -29,12 +30,6 @@ typedef struct doc_type{
         char *value;
 }HTTP_CONTENT_TYPE;
 
-/*HTTP_CONTENT_TYPE http_content_type[] = {
-        { "html","text/html" },
-        { "gif" ,"image/gif" },
-        { "jpeg","image/jpeg" }
-};*/
-
 const char *http_res_tmpl =
         "HTTP/1.1 200 OK\r\n"
         "Server: cdcupt's Server\r\n"
@@ -42,39 +37,6 @@ const char *http_res_tmpl =
         "Connection: Keep-Alive\r\n"
         "Content-Length: %d\r\n"
         "Content-Type: %s\r\n\r\n";
-
-/*const char *unimplemented =
-        "HTTP/1.0 501 Method Not Implemented\r\n"
-         "Server: cdcupt's Server\r\n"
-         "Content-Type: text/html\r\n\r\n"
-         "<HTML><HEAD><TITLE>Method Not Implemented\r\n"
-         "</TITLE></HEAD>\r\n"
-         "<BODY><P>HTTP request method not supported.\r\n"
-         "</BODY></HTML>\r\n";
-const char *not_found =
-        "HTTP/1.0 404 NOT FOUND\r\n"
-        "Server: cdcupt's Server\r\n"
-        "Content-Type: text/html\r\n\r\n"
-        "<HTML><TITLE>Not Found</TITLE>\r\n"
-        "<BODY><P>The server could not fulfill\r\n"
-        "your request because the resource specified\r\n"
-        "is unavailable or nonexistent.\r\n"
-        "</BODY></HTML>\r\n";
-const char *cannot_execute =
-        "HTTP/1.0 500 Internal Server Error\r\n"
-        "Content-type: text/html\r\n\r\n"
-        "<P>Error prohibited CGI execution.\r\n";
-const char *bad_request =
-        "HTTP/1.0 400 BAD REQUEST\r\n"
-        "Content-type: text/html\r\n\r\n"
-        "<P>Your browser sent a bad request, "
-        "such as a POST without a Content-Length.\r\n";
-const char *headers =
-        "HTTP/1.0 200 OK\r\n"
-        "Server: cdcupt's Server\r\n"
-        "Accept-Ranges: bytes\r\n"
-        "Connection: Keep-Alive\r\n"
-        "Content-Type: text/html\r\n\r\n";*/
 
 void headers(int client, const char *filename);
 void cat(int client, FILE *resource);
@@ -105,16 +67,9 @@ static int nthreads = 10;
 
 //声明epoll_event结构体的变量,ev用于注册事件,数组用于回传要处理的事件
 
-struct epoll_event ev,events[1024];
-int epfd;
-int sock_op=1;
-struct sockaddr_in address;
-int n;
-int i;
-char buf[512];
-int off;
-int result;
-char *p;
+/*struct epoll_event ev,events[1024];
+int epfd;*/
+Epoll epoll_(1024);                  //epoll类
 
 Thread *tptr = Thread::GetThreads(nthreads);
 
@@ -158,15 +113,18 @@ void setnonblocking(int sock)
 //epoll检测循环
 void *epoll_loop(void* arg)
 {
+    struct epoll_event *events = epoll_.GetEvents();
+    struct epoll_event ev = epoll_.GetEv();
+    int epfd = epoll_.GetEpfd();
     while(1)
     {
-        n=epoll_wait(epfd,events,4096,-1);  //等待epoll事件的发生
+        int n=epoll_.Poll(4096,-1);  //等待epoll事件的发生
 
         if(n>0)
         {
-            for(i=0;i<n;++i)
+            for(int i=0;i<n;++i)
             {
-                if(events[i].data.fd==sockfd) //如果新监测到一个SOCKET用户连接到了绑定的SOCKET端口，建立新的连接。
+                if(events[i].data.fd == sockfd) //如果新监测到一个SOCKET用户连接到了绑定的SOCKET端口，建立新的连接。
                 {
 
                     pthread_mutex_lock(&mlock);
@@ -188,7 +146,7 @@ void *epoll_loop(void* arg)
                 }
                 else
                 {
-                    if(events[i].events&EPOLLIN)
+                    if(events[i].events & EPOLLIN)
                     {
                         accept_request(events[i].data.fd);
                         epoll_ctl(epfd, EPOLL_CTL_DEL, events[i].data.fd, &ev);
@@ -207,11 +165,42 @@ void *epoll_loop(void* arg)
             }
         }
     }
-
 }
+
+/*int get_line(int sock, char *buf, int size)
+{
+    int i = 0;
+    char c = '\0';
+    int n;
+    while ((i < size - 1) && (c != '\n'))
+    {
+        n = recv(sock, &c, 1, 0);
+        if (n > 0)
+        {
+            if (c == '\r')
+            {
+                n = recv(sock, &c, 1, MSG_PEEK);
+                if ((n > 0) && (c == '\n'))
+                    recv(sock, &c, 1, 0);
+                else
+                    c = '\n';
+            }
+            buf[i] = c;
+            i++;
+        }
+        else
+            c = '\n';
+    }
+    buf[i] = '\0';
+    return(i);
+}*/
 
 int get_line(int sock, char *buf, int size)
 {
+    struct epoll_event *events = epoll_.GetEvents();
+    struct epoll_event ev = epoll_.GetEv();
+    int epfd = epoll_.GetEpfd();
+
     int i = 0;
     char c = '\0';
     int n;
@@ -315,11 +304,16 @@ int startup(u_short *port)
     sockfd = socket(AF_INET,SOCK_STREAM,0);
 
     /****************************************************///epoll初始化
-    epfd=epoll_create(65535);
+    /*epfd=epoll_create(65535);
     setnonblocking(sockfd); //epoll支持  I/O非阻塞
     ev.data.fd=sockfd;    //设置要处理的事件类型
     ev.events=EPOLLIN|EPOLLET;  //ev.events=EPOLLIN;
-    epoll_ctl(epfd,EPOLL_CTL_ADD,sockfd,&ev);
+    epoll_ctl(epfd,EPOLL_CTL_ADD,sockfd,&ev);*/
+    /****************************************************/
+
+    /****************************************************///epoll初始化,类实例
+    setnonblocking(sockfd); //epoll支持  I/O非阻塞
+    epoll_.Ctrl(EPOLL_CTL_ADD, sockfd, EPOLLIN|EPOLLET);
     /****************************************************/
 
     // 定义 sockaddr_in
@@ -350,34 +344,6 @@ void error_die(const char *sc)
     perror(sc);
     exit(1);
 }
-
-/*int get_line(int sock, char *buf, int size)
-{
-    int i = 0;
-    char c = '\0';
-    int n;
-    while ((i < size - 1) && (c != '\n'))
-    {
-        n = recv(sock, &c, 1, 0);
-        if (n > 0)
-        {
-            if (c == '\r')
-            {
-                n = recv(sock, &c, 1, MSG_PEEK);
-                if ((n > 0) && (c == '\n'))
-                    recv(sock, &c, 1, 0);
-                else
-                    c = '\n';
-            }
-            buf[i] = c;
-            i++;
-        }
-        else
-            c = '\n';
-    }
-    buf[i] = '\0';
-    return(i);
-}*/
 
 void cat(int client, FILE *resource)
 {
