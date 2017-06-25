@@ -18,9 +18,14 @@
 #include "web.h"
 #include "epoll.h"
 
+#include "rio.h"
+#include "fastcgi.h"
+
 #include <signal.h>
 
 #include <iostream>
+
+using namespace std;
 
 pthread_mutex_t mlock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -381,8 +386,7 @@ void serve_file(int client, const char *filename)
     fclose(resource);
 }
 
-void execute_cgi(int client, const char *path,
-                 const char *method, const char *query_string)
+void execute_cgi(rio_t *rp, hhr_t *hp, const char *query_string)
 {
     char buf[1024];
     int cgi_output[2];
@@ -395,43 +399,34 @@ void execute_cgi(int client, const char *path,
     int content_length = -1;
 
     buf[0] = 'A'; buf[1] = '\0';
-    if (strcasecmp(method, "GET") == 0)
-        while ((numchars > 0) && strcmp("\n", buf))  /* read & discard headers */
-            numchars = get_line(client, buf, sizeof(buf));
-    else    /* POST */
+    if (strcasecmp(hp->method, "POST") == 0)    /* POST */
     {
-        numchars = get_line(client, buf, sizeof(buf));
-        while ((numchars > 0) && strcmp("\n", buf))
-        {
-            buf[15] = '\0';
-            if (strcasecmp(buf, "Content-Length:") == 0)
-                content_length = atoi(&(buf[16]));
-            numchars = get_line(client, buf, sizeof(buf));
-        }
+        char* len = hp->conlength;
+        content_length = atoi(len);
         if (content_length == -1) {
             //send((int)client,bad_request,sizeof(bad_request),0);             //change
-            bad_request(client);
+            bad_request(rp->rio_fd);
             return;
         }
     }
 
     sprintf(buf, "HTTP/1.0 200 OK\r\n");
-    send(client, buf, strlen(buf), 0);
+    send(rp->rio_fd, buf, strlen(buf), 0);
 
     if (pipe(cgi_output) < 0) {
         //send((int)client,cannot_execute,sizeof(cannot_execute),0);             //change
-        cannot_execute(client);
+        cannot_execute(rp->rio_fd);
         return;
     }
     if (pipe(cgi_input) < 0) {
         //send((int)client,cannot_execute,sizeof(cannot_execute),0);             //change
-        cannot_execute(client);
+        cannot_execute(rp->rio_fd);
         return;
     }
 
     if ( (pid = fork()) < 0 ) {
         //send((int)client,cannot_execute,sizeof(cannot_execute),0);             //change
-        cannot_execute(client);
+        cannot_execute(rp->rio_fd);
         return;
     }
     if (pid == 0)  /* child: CGI script */
@@ -444,9 +439,9 @@ void execute_cgi(int client, const char *path,
         dup2(cgi_input[0], 0);
         close(cgi_output[0]);
         close(cgi_input[1]);
-        sprintf(meth_env, "REQUEST_METHOD=%s", method);
+        sprintf(meth_env, "REQUEST_METHOD=%s", hp->method);
         putenv(meth_env);
-        if (strcasecmp(method, "GET") == 0) {
+        if (strcasecmp(hp->method, "GET") == 0) {
             sprintf(query_env, "QUERY_STRING=%s", query_string);
             putenv(query_env);
         }
@@ -454,19 +449,19 @@ void execute_cgi(int client, const char *path,
             sprintf(length_env, "CONTENT_LENGTH=%d", content_length);
             putenv(length_env);
         }
-        execl(path, path, NULL);
+        execl(hp->name, hp->name, NULL);
         exit(0);
     }
     else {    /* parent */
         close(cgi_output[1]);
         close(cgi_input[0]);
-        if (strcasecmp(method, "POST") == 0)
+        if (strcasecmp(hp->method, "POST") == 0)
             for (i = 0; i < content_length; i++) {
-                recv(client, &c, 1, 0);
+                recv(rp->rio_fd, &c, 1, 0);
                 write(cgi_input[1], &c, 1);
             }
         while (read(cgi_output[0], &c, 1) > 0)
-            send(client, &c, 1, 0);
+            send(rp->rio_fd, &c, 1, 0);
 
         close(cgi_output[0]);
         close(cgi_input[1]);
@@ -474,63 +469,327 @@ void execute_cgi(int client, const char *path,
     }
 }
 
+/*****************************fastcgi-php-fpm**********************************/
+/*
+ * php处理结果发送给客户端
+ */
+int send_to_cli(int fd, int outlen, char *out,
+        int errlen, char *err, FCGI_EndRequestBody *endr
+        )
+{
+    char *p;
+    int n;
+
+    char buf[MAXLINE];
+    sprintf(buf, "HTTP/1.1 200 OK\r\n");
+    sprintf(buf, "%sServer: Zhou Web Server\r\n", buf);
+    sprintf(buf, "%sContent-Length: %d\r\n", buf, outlen + errlen);
+    sprintf(buf, "%sContent-Type: %s\r\n\r\n", buf, "text/html");
+    if (rio_writen(fd, buf, strlen(buf)) < 0) {
+        cout << "write to client error" << endl;
+    }
+
+    if (outlen > 0) {
+        p = index(out, '\r');
+        n = (int)(p - out);
+        if (rio_writen(fd, p + 3, outlen - n - 3) < 0) {
+            cout << "rio_written error" << endl;
+            return -1;
+        }
+    }
+
+    if (errlen > 0) {
+        if (rio_writen(fd, err, errlen) < 0) {
+            cout << "rio_written error" << endl;
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+int open_fastcgifd() {
+    int sock;
+	struct sockaddr_in serv_addr;
+
+    // 创建套接字
+	sock = socket(PF_INET, SOCK_STREAM, 0);
+	if (-1 == sock) {
+        cout << "socket error" << endl;
+        return -1;
+	}
+
+	memset(&serv_addr, 0, sizeof(serv_addr));
+	serv_addr.sin_family = AF_INET;
+	serv_addr.sin_addr.s_addr = inet_addr(FCGI_HOST);
+	serv_addr.sin_port = htons(FCGI_PORT);
+
+    // 连接服务器
+	if(-1 == connect(sock, (struct sockaddr *) &serv_addr, sizeof(serv_addr))){
+        cout << "connect error" << endl;
+        return -1;
+	}
+
+    return sock;
+}
+
+/*
+ * 发送http请求行和请求体数据给fastcgi服务器
+ */
+int send_fastcgi(rio_t *rp, hhr_t *hp, int sock)
+{
+    int requestId, i, l;
+    char *buf;
+
+    requestId = sock;
+
+    // params参数名
+    char *paname[] = {
+        "SCRIPT_FILENAME",
+        "SCRIPT_NAME",
+        "REQUEST_METHOD",
+        "REQUEST_URI",
+        "QUERY_STRING",
+        "CONTENT_TYPE",
+        "CONTENT_LENGTH"
+    };
+
+    // 对应上面params参数名，具体参数值所在hhr_t结构体中的偏移
+    int paoffset[] = {
+        (size_t) & (((hhr_t *)0)->filename),
+        (size_t) & (((hhr_t *)0)->name),
+        (size_t) & (((hhr_t *)0)->method),
+        (size_t) & (((hhr_t *)0)->uri),
+        (size_t) & (((hhr_t *)0)->cgiargs),
+        (size_t) & (((hhr_t *)0)->contype),
+        (size_t) & (((hhr_t *)0)->conlength)
+    };
+
+    // 发送开始请求记录
+    if (sendBeginRequestRecord(rio_writen, sock, requestId) < 0) {
+        cout << "sendBeginRequestRecord error" << endl;
+        return -1;
+    }
+
+    // 发送params参数
+    l = sizeof(paoffset) / sizeof(paoffset[0]);
+    for (i = 0; i < l; i++) {
+        // params参数的值不为空才发送
+        if (strlen((char *)(((long)hp) + paoffset[i])) > 0) {
+            if (sendParamsRecord(rio_writen, sock, requestId, paname[i], strlen(paname[i]),
+                        (char *)(((long)hp) + paoffset[i]),
+                        strlen((char *)(((long)hp) + paoffset[i]))) < 0) {
+                cout << "sendParamsRecord error" << endl;;
+                return -1;
+            }
+        }
+    }
+
+    // 发送空的params参数
+    if (sendEmptyParamsRecord(rio_writen, sock, requestId) < 0) {
+        cout << "sendEmptyParamsRecord error" << endl;
+        return -1;
+    }
+
+    // 继续读取请求体数据
+    l = atoi(hp->conlength);
+    if (l > 0) { // 请求体大小大于0
+        buf = (char *)malloc(l + 1);
+        memset(buf, '\0', l);
+        if (rio_readnb(rp, buf, l) < 0) {
+            cout << "rio_readn error" << endl;
+            free(buf);
+            return -1;
+        }
+
+        // 发送stdin数据
+        if (sendStdinRecord(rio_writen, sock, requestId, buf, l) < 0) {
+            cout << "sendStdinRecord error" << endl;
+            free(buf);
+            return -1;
+        }
+
+        free(buf);
+    }
+
+    // 发送空的stdin数据
+    if (sendEmptyStdinRecord(rio_writen, sock, requestId) < 0) {
+        cout << "sendEmptyStdinRecord error" << endl;
+        return -1;
+    }
+
+    return 0;
+}
+
+/*
+ * 接收fastcgi返回的数据
+ */
+int recv_fastcgi(int fd, int sock) {
+    int requestId;
+    char *p;
+    int n;
+
+    requestId = sock;
+
+    // 读取处理结果
+    if (recvRecord(rio_readn, send_to_cli, fd, sock, requestId) < 0) {
+        cout << "recvRecord error" << endl;
+
+        return -1;
+    }
+
+    return 0;
+}
+
+void execute_php(rio_t *rp, hhr_t *hp) {
+    int sock;
+
+    // 创建一个连接到fastcgi服务器的套接字
+    sock = open_fastcgifd();
+
+    // 发送http请求数据
+    send_fastcgi(rp, hp, sock);
+
+    // 接收处理结果
+    recv_fastcgi(rp->rio_fd, sock);
+
+    close(sock); // 关闭与fastcgi服务器连接的套接字
+}
+
+/*
+ * 判断str起始位置开始是否包含"content-type"
+ * 包含返回1
+ * 不包含返回0
+ */
+static int is_contype(char *str)
+{
+    char *cur = str;
+    char *cmp = "content-type";
+
+    // 删除开始的空格
+    while (*cur == ' ') {
+        cur++;
+    }
+
+    for (; *cmp != '\0' && tolower(*cur) == *cmp; cur++,cmp++);
+
+    if (*cmp == '\0') { // cmp字符串以0结束
+        return 1;
+    }
+
+    return 0;
+}
+
+/*
+ * 判断str起始位置开始是否包含"content-length"
+ * 包含返回1
+ * 不包含返回0
+ */
+static int is_conlength(char *str)
+{
+    char *cur = str;
+    char *cmp = "content-length";
+
+    // 删除开始的空格
+    while (*cur == ' ') {
+        cur++;
+    }
+
+    for (; *cmp != '\0' && tolower(*cur) == *cmp; cur++,cmp++);
+
+    if (*cmp == '\0') { // cmp字符串以0结束
+        return 1;
+    }
+
+    return 0;
+}
+/******************************************************************************/
+
 void accept_request(int client)             //请求方法：空格：URL：协议版本：/r/n   请求行
 {
     char buf[1024];
     int numchars;
-    char method[255];
-    char url[255];
+    //char url[255];
     char path[512];
     size_t i, j;
     struct stat st;
-    int cgi = 0;      /* becomes true if server decides this is a CGI
-                    * program */
-    char *query_string = NULL;
+    int dynamic = 0; //state 1 :cgi程序； state 2 ：php程序
+    char query_string[512];
 
-    numchars = get_line((int)client, buf, sizeof(buf));
-    i = 0; j = 0;
-    while (!ISspace(buf[j]) && (i < sizeof(method) - 1))
+    /*************************************************************************/
+    char *query;
+    char *php = ".php"; // 根据后缀名判断是静态页面还是动态页面
+    char *cgi = ".cgi"; // 根据后缀名判断是静态页面还是动态页面
+
+    char cwd[1024];
+
+    hhr_t hhr;
+    rio_t rio;
+
+    memset(&hhr, 0, sizeof(hhr));
+    memset(&rio, 0, sizeof(rio));
+
+    rio_readinitb(&rio, client);
+    /*************************************************************************/
+
+    memset(buf, 0, 1024);
+    get_line((int)client, buf, sizeof(buf));
+
+    // 提取请求方法、请求URI、HTTP版本
+    sscanf(buf, "%s %s %s", hhr.method, hhr.uri, hhr.version);
+    char urin[1024];
+    strcpy(urin, hhr.uri); // 不破坏原始字符串
+
+    if (strcasecmp(hhr.method, "GET") && strcasecmp(hhr.method, "POST"))
     {
-        method[i] = buf[j];
-        i++; j++;
-    }
-    method[i] = '\0';
-
-    if (strcasecmp(method, "GET") && strcasecmp(method, "POST"))
-    {
-
         //send((int)client,unimplemented,sizeof(unimplemented),0);             //change
         unimplemented(client);
         return;
     }
 
-    if (strcasecmp(method, "POST") == 0)
-        cgi = 1;
+    //获取头部信息
+/******************************************************************************/
+    memset(buf, 0, 1024);
+    get_line((int)client, buf, sizeof(buf));
 
-    i = 0;
-    while (ISspace(buf[j]) && (j < sizeof(buf)))                            //跳过空格
-        j++;
-    while (!ISspace(buf[j]) && (i < sizeof(url) - 1) && (j < sizeof(buf)))  //读取URL
-    {
-        url[i] = buf[j];
-        i++; j++;
+    char *start, *end;
+    while (errno != EAGAIN) {
+        start = index(buf, ':');
+        // 每行数据包含\r\n字符，需要删除
+        end = index(buf, '\r');
+        if (start != 0 && end != 0) {
+            *end = '\0';
+            while ((*(start + 1)) == ' ') {
+                start++;
+            }
+
+            if (is_contype(buf)) {
+                strcpy(hhr.contype, start + 1);
+            } else if (is_conlength(buf)) {
+                strcpy(hhr.conlength, start + 1);
+            }
+        }
+        memset(buf, 0, 1024);
+        get_line((int)client, buf, sizeof(buf));
     }
-    url[i] = '\0';
-
-    if (strcasecmp(method, "GET") == 0)
+/******************************************************************************/
+//cout << "query_string: " << query_string << endl;
+    if (strcasecmp(hhr.method, "GET") == 0)
     {
-        query_string = url;
-        while ((*query_string != '?') && (*query_string != '\0'))
-            query_string++;
-        if (*query_string == '?')
-        {
-            cgi = 1;
-            *query_string = '\0';
-            query_string++;
+        cout << "urin: " << urin << endl;
+        for(int i=0; urin[i]!='\0'; ++i){
+            if(urin[i] == '?'){
+                urin[i] = '\0';                             //将路径从字符'?'截断
+                int j;
+                for(j=i+1; urin[j]!='\0'; ++j){
+                    query_string[j-i-1] = urin[j];
+                }
+                query_string[j] = '\0';
+            }
         }
     }
 
-    sprintf(path, "webdocs%s", url);
+    sprintf(path, "webdocs%s", urin);
     //printf("source path : %s\n", path);
     if (path[strlen(path) - 1] == '/')
         strcat(path, "index.html");
@@ -538,6 +797,7 @@ void accept_request(int client)             //请求方法：空格：URL：协�
         printf("Not found 404!\n");
         while ((numchars > 0) && strcmp("\n", buf))  /* read & discard headers */
         numchars = get_line((int)client, buf, sizeof(buf));
+        if(errno == EAGAIN) cout << "808 error!" << endl;
         //send((int)client,not_found,sizeof(not_found),0);             //change
         not_found(client);
     }
@@ -547,14 +807,36 @@ void accept_request(int client)             //请求方法：空格：URL：协�
             strcat(path, "/index.html");
         if ((st.st_mode & S_IXUSR) ||
             (st.st_mode & S_IXGRP) ||
-            (st.st_mode & S_IXOTH)    )
-            cgi = 1;
-        if (!cgi){
+            (st.st_mode & S_IXOTH) )
+        {
+                if ((query = strstr(urin, php))) dynamic = 2;
+                else  dynamic = 1;
+        }
+        else {
+            strcpy(hhr.cgiargs, "");
+        }
+
+/******************************************************************************/
+        char* dir = getcwd(cwd, 1024); // 获取当前工作目录
+        strcpy(hhr.filename, dir);       // 包含完整路径名
+        strcat(hhr.filename, path);
+        strcpy(hhr.name, path);         // 不包含完整路径名
+/******************************************************************************/
+
+        if (dynamic == 0){
             serve_file((int)client, path);
             //printf("final path : %s\n", path);
         }
-        else
-            execute_cgi((int)client, path, method, query_string);
+        else if(dynamic == 1){
+            cout << "path: " << hhr.name << endl;
+            cout << "method: " << hhr.method << endl;
+            cout << "conlength: " << hhr.conlength << endl;
+            cout << "query_string: " << query_string << endl;
+            execute_cgi(&rio, &hhr, query_string);
+        }
+        else{
+            execute_php(&rio, &hhr);
+        }
     }
 
     close((int)client);

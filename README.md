@@ -69,3 +69,47 @@ CGI支持：
 
 ## 2017.6.21:
 重新封装Epoll类，恢复到以前的c风格代码
+
+## 2017.6.23~2017.6.25
+封装了一些用到的HTTP首部字段http_header结构体：
+```c
+typedef struct {
+    char uri[256];          // 请求地址
+    char method[16];        // 请求方法
+    char version[16];       // 协议版本url
+    char filename[256];     // 请求文件名(包含完整路径)
+    char name[256];         // 请求文件名(不包含路径，只有文件名)
+    char cgiargs[256];      // 查询参数
+    char contype[256];      // 请求体类型
+    char conlength[16];     // 请求体长度
+}hhr_t;
+```
+参考《CSAPP》一书使用健壮I/O rio封装了带缓存的read/write函数
+```c
+#define RIO_BUFSIZE 8192
+typedef struct {
+    int rio_fd;                 // 内部缓冲区对应的描述符
+    size_t rio_cnt;                // 可以读取的字节数
+    char *rio_bufptr;           // 下一个可以读取的字节地址
+    char rio_buf[RIO_BUFSIZE];  // 内部缓冲区
+} rio_t;
+
+/*从描述符fd中读取n个字节到存储器位置usrbuf*/
+ssize_t rio_readn(int fd, void *usrbuf, size_t n);
+
+/*将usrbuf缓冲区中的前n个字节数据写入fd中*/
+ssize_t rio_writen(int fd, void *usrbuf, size_t n);
+
+/*初始化内部缓冲区rio_t结构*/
+void rio_readinitb(rio_t *rp, int fd);
+
+/*系统调用read函数的包装函数,相对于read，增加了内部缓冲区*/
+static ssize_t rio_read(rio_t *rp, char *usrbuf, size_t n);
+
+/*从文件rp中读取一行数据（包括结尾的换行符），拷贝到usrbuf并用0字符来结束这行数据*/
+ssize_t rio_readlineb(rio_t *rp, void *usrbuf, size_t maxlen);
+
+/*从文件rp中读取n字节数据到usrbuf*/
+ssize_t rio_readnb(rio_t *rp, void *usrbuf, size_t n);
+```
+cgi程序运行正常，fastcgi-fpm未测试
