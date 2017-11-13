@@ -25,10 +25,12 @@
 
 #include <iostream>
 
+#include "tpool.h"    //线程池
+
 using namespace std;
 
 pthread_mutex_t mlock = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t mlock = PTHREAD_COND_INITIALIZER;
+pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 
 
 typedef struct doc_type{
@@ -60,7 +62,7 @@ int get_line(int sock, char *buf, int size);
 void serve_file(int client, const char *filename);
 void execute_cgi(int client, const char *path,
                  const char *method, const char *query_string);
-void accept_request(int client);
+void accept_request(void *ptr);
 void thread_main(void *arg);
 void thread_make(int i);
 
@@ -68,8 +70,11 @@ void thread_make(int i);
 void setnonblocking(int sock);
 void *epoll_loop(void* arg);
 
+//处理SIGPIPE
+void handle_for_sigpipe();
+
 int sockfd = -1;
-static int nthreads = 10;
+static int nthreads = 1;
 
 //声明epoll_event结构体的变量,ev用于注册事件,数组用于回传要处理的事件
 
@@ -83,20 +88,35 @@ int main(){
         u_short port = 0;
         int i;
 
+        handle_for_sigpipe();       // 对一个对端已经关闭的socket调用两次write, 第二次将会生成SIGPIPE信号, 该信号默认结束进程.
+        signal(SIGINT,handle_signal);
+
         sockfd = startup(&port);
         printf("server running on port %d\n", port);
 
+        /*
         for(i=0; i<nthreads; ++i){
             thread_make(i);
         }
+        */
+        tk_threadpool_t *tp = threadpool_init(nthreads);
 
-        signal(SIGINT,handle_signal);
+        pthread_t tid;
+        if (pthread_create(&tid ,NULL, epoll_loop, (void *) tp) != 0)
+            perror("pthread_create");
 
-        while(1){
-            pause();
-        }
+        pthread_join(tid ,NULL); 
 
         exit(0);
+}
+
+void handle_for_sigpipe(){
+    struct sigaction sa;
+    memset(&sa, '\0', sizeof(sa));
+    sa.sa_handler = SIG_IGN;
+    sa.sa_flags = 0;
+    if(sigaction(SIGPIPE, &sa, NULL))
+        return;
 }
 
 void setnonblocking(int sock)
@@ -122,6 +142,7 @@ void *epoll_loop(void* arg)
     struct epoll_event *events = epoll_.GetEvents();
     struct epoll_event ev = epoll_.GetEv();
     int epfd = epoll_.GetEpfd();
+    tk_threadpool_t *tp = (tk_threadpool_t *)arg;
     while(1)
     {
         int n=epoll_.Poll(4096,-1);  //等待epoll事件的发生
@@ -148,13 +169,14 @@ void *epoll_loop(void* arg)
                     }
                     pthread_mutex_unlock(&mlock);
 
-                    tptr[(long)arg].upperCount();
                 }
                 else
                 {
                     if(events[i].events & EPOLLIN)
                     {
-                        accept_request(events[i].data.fd);
+                        //accept_request(events[i].data.fd);
+                        int *ptr = &events[i].data.fd;
+                        int rc = threadpool_add(tp, accept_request, ptr);     //加入作业队列
                         epoll_ctl(epfd, EPOLL_CTL_DEL, events[i].data.fd, &ev);
                         close(events[i].data.fd);
                     }
@@ -246,6 +268,7 @@ int get_line(int sock, char *buf, int size)
     return(i);
 }
 
+/*
 void thread_main(void *arg){
     int sock_client = -1;
 
@@ -275,6 +298,7 @@ void thread_make(int i){
     if (pthread_create(&tid , NULL, epoll_loop, (void *) i) != 0)
         perror("pthread_create");
 }
+*/
 
 void *http_response(void *sock_client){
     pthread_detach(pthread_self());
@@ -714,8 +738,9 @@ static int is_conlength(char *str)
 }
 /******************************************************************************/
 
-void accept_request(int client)             //请求方法：空格：URL：协议版本：/r/n   请求行
+void accept_request(void *ptr)             //请求方法：空格：URL：协议版本：/r/n   请求行
 {
+    int client = *((int *)ptr);
     char buf[1024];
     int numchars;
     //char url[255];

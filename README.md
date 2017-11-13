@@ -114,3 +114,13 @@ ssize_t rio_readnb(rio_t *rp, void *usrbuf, size_t n);
 ```
 ## 2017.10.30:
 修改并发模型，以前的模型将epoll封装在worker中会有惊群效应，现在维护一个链表作为线程池worker通过FIFO形式互斥的提取线程池中的任务。
+```c++
+if(events[i].events & EPOLLIN)
+{
+    int *ptr = &events[i].data.fd;
+    int rc = threadpool_add(tp, accept_request, ptr);     //加入作业队列
+    epoll_ctl(epfd, EPOLL_CTL_DEL, events[i].data.fd, &ev);
+    close(events[i].data.fd);
+}
+```
+epoll主线程将accept_request插入任务队列，由worker线程处理。
