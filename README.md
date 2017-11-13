@@ -72,7 +72,7 @@ CGI支持：
 
 ## 2017.6.23~2017.6.25
 封装了一些用到的HTTP首部字段http_header结构体：
-```c
+```c++
 typedef struct {
     char uri[256];          // 请求地址
     char method[16];        // 请求方法
@@ -85,7 +85,7 @@ typedef struct {
 }hhr_t;
 ```
 参考《CSAPP》一书使用健壮I/O rio封装了带缓存的read/write函数
-```c
+```c++
 #define RIO_BUFSIZE 8192
 typedef struct {
     int rio_fd;                 // 内部缓冲区对应的描述符
@@ -95,7 +95,7 @@ typedef struct {
 } rio_t;
 
 /*从描述符fd中读取n个字节到存储器位置usrbuf*/
-ssize_t rio_readn(int fd, void *usrbuf, size_t n);
+ssize_t rio_readn(int fd, v163oid *usrbuf, size_t n);
 
 /*将usrbuf缓冲区中的前n个字节数据写入fd中*/
 ssize_t rio_writen(int fd, void *usrbuf, size_t n);
@@ -112,4 +112,5 @@ ssize_t rio_readlineb(rio_t *rp, void *usrbuf, size_t maxlen);
 /*从文件rp中读取n字节数据到usrbuf*/
 ssize_t rio_readnb(rio_t *rp, void *usrbuf, size_t n);
 ```
-cgi程序运行正常，fastcgi-fpm未测试
+## 2017.10.30:
+修改并发模型，以前的模型将epoll封装在worker中会有惊群效应，现在维护一个链表作为线程池worker通过FIFO形式互斥的提取线程池中的任务。

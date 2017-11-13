@@ -28,6 +28,7 @@
 using namespace std;
 
 pthread_mutex_t mlock = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t mlock = PTHREAD_COND_INITIALIZER;
 
 
 typedef struct doc_type{
@@ -386,7 +387,7 @@ void serve_file(int client, const char *filename)
     fclose(resource);
 }
 
-void execute_cgi(rio_t *rp, hhr_t *hp, const char *query_string)
+void execute_cgi(rio_t *rp, hhr_t *hp)
 {
     char buf[1024];
     int cgi_output[2];
@@ -442,7 +443,7 @@ void execute_cgi(rio_t *rp, hhr_t *hp, const char *query_string)
         sprintf(meth_env, "REQUEST_METHOD=%s", hp->method);
         putenv(meth_env);
         if (strcasecmp(hp->method, "GET") == 0) {
-            sprintf(query_env, "QUERY_STRING=%s", query_string);
+            sprintf(query_env, "QUERY_STRING=%s", hp->cgiargs);
             putenv(query_env);
         }
         else {   /* POST */
@@ -643,6 +644,14 @@ int recv_fastcgi(int fd, int sock) {
 
 void execute_php(rio_t *rp, hhr_t *hp) {
     int sock;
+    printf("uri: %s\n", hp->uri);
+    printf("method: %s\n", hp->method);
+    printf("version: %s\n", hp->version);
+    printf("filename: %s\n", hp->filename);
+    printf("name: %s\n", hp->name);
+    printf("cgiargs: %s\n", hp->cgiargs);
+    printf("contype: %s\n", hp->contype);
+    printf("conlength: %s\n", hp->conlength);
 
     // 创建一个连接到fastcgi服务器的套接字
     sock = open_fastcgifd();
@@ -773,21 +782,28 @@ void accept_request(int client)             //请求方法：空格：URL：协�
         get_line((int)client, buf, sizeof(buf));
     }
 /******************************************************************************/
-//cout << "query_string: " << query_string << endl;
-    if (strcasecmp(hhr.method, "GET") == 0)
-    {
-        cout << "urin: " << urin << endl;
-        for(int i=0; urin[i]!='\0'; ++i){
-            if(urin[i] == '?'){
-                urin[i] = '\0';                             //将路径从字符'?'截断
-                int j;
-                for(j=i+1; urin[j]!='\0'; ++j){
-                    query_string[j-i-1] = urin[j];
-                }
-                query_string[j] = '\0';
+    /*ptr = index(urin, '?');
+    if (ptr) {
+        strcpy(cgiargs, ptr + 1);
+        *ptr = '\0';
+    } else {
+        // 类似index.php/class/method会提取class/method的参数
+        if (*(query + sizeof(delim)) == '/') {
+            strcpy(cgiargs, query + sizeof(delim) + 1);
+            *(query + sizeof(delim)) = '\0';
+        }
+    }*/
+    for(int i=0; urin[i]!='\0'; ++i){
+        if(urin[i] == '?'){
+            urin[i] = '\0';                             //将路径从字符'?'截断
+            int j;
+            for(j=i+1; urin[j]!='\0'; ++j){
+                query_string[j-i-1] = urin[j];
             }
+            query_string[j] = '\0';
         }
     }
+    strcpy(hhr.cgiargs, query_string);
 
     sprintf(path, "webdocs%s", urin);
     //printf("source path : %s\n", path);
@@ -812,9 +828,6 @@ void accept_request(int client)             //请求方法：空格：URL：协�
                 if ((query = strstr(urin, php))) dynamic = 2;
                 else  dynamic = 1;
         }
-        else {
-            strcpy(hhr.cgiargs, "");
-        }
 
 /******************************************************************************/
         char* dir = getcwd(cwd, 1024); // 获取当前工作目录
@@ -828,11 +841,7 @@ void accept_request(int client)             //请求方法：空格：URL：协�
             //printf("final path : %s\n", path);
         }
         else if(dynamic == 1){
-            cout << "path: " << hhr.name << endl;
-            cout << "method: " << hhr.method << endl;
-            cout << "conlength: " << hhr.conlength << endl;
-            cout << "query_string: " << query_string << endl;
-            execute_cgi(&rio, &hhr, query_string);
+            execute_cgi(&rio, &hhr);
         }
         else{
             execute_php(&rio, &hhr);
