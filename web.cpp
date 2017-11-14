@@ -85,7 +85,7 @@ Epoll epoll_(1024);                  //epoll类
 Thread *tptr = Thread::GetThreads(nthreads);
 
 int main(){
-        u_short port = 0;
+        u_short port = PORT;
         int i;
 
         handle_for_sigpipe();       // 对一个对端已经关闭的socket调用两次write, 第二次将会生成SIGPIPE信号, 该信号默认结束进程.

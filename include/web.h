@@ -37,6 +37,7 @@ void execute_php(rio_t *rp, hhr_t *hp);
 #define LOCALBUF 1024 // 局部缓冲区大小
 /*****************************************************************/
 
+#define PORT 8888
 #define SERV "0.0.0.0"
 #define QUEUE 20
 #define BUFF_SIZE 1024
