@@ -178,16 +178,16 @@ void *epoll_loop(void* arg)
                         int *ptr = &events[i].data.fd;
                         int rc = threadpool_add(tp, accept_request, ptr);     //加入作业队列
                         epoll_ctl(epfd, EPOLL_CTL_DEL, events[i].data.fd, &ev);
-                        close(events[i].data.fd);
+                        //close(events[i].data.fd);                           //不需要,类析构时释放
                     }
                     else if(events[i].events&EPOLLOUT)
                     {
                         serve_file(events[i].data.fd, "webdocs/index.html");
-                        close(events[i].data.fd);
+                        //close(events[i].data.fd);
                     }
                     else
                     {
-                        close(events[i].data.fd);
+                        //close(events[i].data.fd);
                     }
                 }
             }
@@ -249,6 +249,7 @@ int get_line(int sock, char *buf, int size)
             i++;
         }
         else{
+            cout << "errno: " << strerror(errno) << endl;
             if(errno == EAGAIN)
             {
                 c = '\n';
