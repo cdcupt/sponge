@@ -124,3 +124,14 @@ if(events[i].events & EPOLLIN)
 }
 ```
 epoll主线程将accept_request插入任务队列，由worker线程处理。
+
+## 2017.11.15
+修复一个小bug，在epoll循环中close掉epollfd导致出现errno9错误
+```
+~Epoll () {
+    // 使用完epoll后，必须调用close() 关闭，否则可能导致fd被耗尽。
+    close(epfd_);
+    delete [] events_;
+}
+```
+epollfd由析构函数自动释放
