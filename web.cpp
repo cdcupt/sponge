@@ -27,7 +27,10 @@
 
 #include "tpool.h"    //线程池
 
+#include "log.h"
+
 using namespace std;
+using namespace sponge::common
 
 pthread_mutex_t mlock = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
@@ -102,10 +105,13 @@ int main(){
         tk_threadpool_t *tp = threadpool_init(nthreads);
 
         pthread_t tid;
-        if (pthread_create(&tid ,NULL, epoll_loop, (void *) tp) != 0)
-            perror("pthread_create");
+        if (pthread_create(&tid ,NULL, epoll_loop, (void *) tp) != 0){
+            ret = PTHREAD_CREATE_FAILED;
+            LOG_ERROR("create pthread failed, ret=%d", ret);
+            return ret;
+        }
 
-        pthread_join(tid ,NULL); 
+        pthread_join(tid ,NULL);
 
         exit(0);
 }
@@ -125,14 +131,16 @@ void setnonblocking(int sock)
     opts=fcntl(sock,F_GETFL);
     if(opts<0)
     {
-         perror("fcntl(sock,GETFL)");
-         exit(1);
+        ret = GETFL_ERROR;
+        LOG_ERROR("fcntl F_SETFL error, ret=%d", ret);
+        exit(1);
     }
     opts = opts|O_NONBLOCK;
     if(fcntl(sock,F_SETFL,opts)<0)
     {
-         perror("fcntl(sock,SETFL,opts)");
-         exit(1);
+        ret = GETFL_ERROR;
+        LOG_ERROR("fcntl F_SETFL error, ret=%d", ret);
+        exit(1);
     }
 }
 
@@ -253,7 +261,8 @@ int get_line(int sock, char *buf, int size)
             if(errno == EAGAIN)
             {
                 c = '\n';
-                printf("EAGAIN\n");
+                ret = SPONGE_EAGAIN;
+                LOG_ERROR("eagain error, ret=%d", ret);
                 break;
             }
             else{
@@ -354,20 +363,24 @@ int startup(u_short *port)
     skaddr.sin_addr.s_addr = inet_addr(SERV);
     // bind，绑定 socket 和 sockaddr_in
     if( bind(sockfd,(struct sockaddr *)&skaddr,sizeof(skaddr)) == -1 ){
-            error_die("bind error");
+        ret = BIND_ERROR;
+        LOG_ERROR("bind error, ret=%d", ret);
     }
-     if (*port == 0)  /* if dynamically allocating a port */
-     {
-         socklen_t namelen = sizeof(skaddr);
-         if (getsockname(sockfd, (struct sockaddr *)&skaddr, &namelen) == -1)
-            error_die("getsockname");
-         *port = ntohs(skaddr.sin_port);
-     }
-     // listen，开始添加端口
-     if( listen(sockfd,QUEUE) == -1 ){
-             error_die("listen error");
-     }
-     return(sockfd);
+    if (*port == 0)  /* if dynamically allocating a port */
+    {
+        socklen_t namelen = sizeof(skaddr);
+        if (getsockname(sockfd, (struct sockaddr *)&skaddr, &namelen) == -1){
+            ret = GETSOCKNAME_ERROR;
+            LOG_ERROR("getsockname error, ret=%d", ret);
+        }
+        *port = ntohs(skaddr.sin_port);
+    }
+    // listen，开始添加端口
+    if( listen(sockfd,QUEUE) == -1 ){
+        ret = LISTEN_ERROR;
+        LOG_ERROR("listen error, ret=%d", ret);
+    }
+    return(sockfd);
 }
 
 void error_die(const char *sc)
@@ -513,21 +526,26 @@ int send_to_cli(int fd, int outlen, char *out,
     sprintf(buf, "%sContent-Type: %s\r\n\r\n", buf, "text/html");
     if (rio_writen(fd, buf, strlen(buf)) < 0) {
         cout << "write to client error" << endl;
+        ret = WRITE_TO_CLIENT_ERROR;
+        LOG_ERROR("write to client error, ret=%d", ret);
+        return ret;
     }
 
     if (outlen > 0) {
         p = index(out, '\r');
         n = (int)(p - out);
         if (rio_writen(fd, p + 3, outlen - n - 3) < 0) {
-            cout << "rio_written error" << endl;
-            return -1;
+            ret = RIO_WRITTEN_ERROR;
+            LOG_ERROR("rio written error, ret=%d", ret);
+            return ret;
         }
     }
 
     if (errlen > 0) {
         if (rio_writen(fd, err, errlen) < 0) {
-            cout << "rio_written error" << endl;
-            return -1;
+            ret = RIO_WRITTEN_ERROR;
+            LOG_ERROR("rio written error, ret=%d", ret);
+            return ret;
         }
     }
 
@@ -541,8 +559,10 @@ int open_fastcgifd() {
     // 创建套接字
 	sock = socket(PF_INET, SOCK_STREAM, 0);
 	if (-1 == sock) {
-        cout << "socket error" << endl;
-        return -1;
+        ret = SET_SOCKET_ERROR;
+        LOG_ERROR("set socket error, ret=%d", ret);
+        return ret;
+
 	}
 
 	memset(&serv_addr, 0, sizeof(serv_addr));
@@ -552,8 +572,10 @@ int open_fastcgifd() {
 
     // 连接服务器
 	if(-1 == connect(sock, (struct sockaddr *) &serv_addr, sizeof(serv_addr))){
-        cout << "connect error" << endl;
-        return -1;
+        ret = CONNECT_ERROR;
+        LOG_ERROR("connect error, ret=%d", ret);
+        return ret;
+
 	}
 
     return sock;
@@ -593,8 +615,9 @@ int send_fastcgi(rio_t *rp, hhr_t *hp, int sock)
 
     // 发送开始请求记录
     if (sendBeginRequestRecord(rio_writen, sock, requestId) < 0) {
-        cout << "sendBeginRequestRecord error" << endl;
-        return -1;
+        ret = SENDBEGINREQUESTRECORD_ERROR;
+        LOG_ERROR("sendBeginRequestRecord error, ret=%d", ret);
+        return ret;
     }
 
     // 发送params参数
@@ -605,16 +628,18 @@ int send_fastcgi(rio_t *rp, hhr_t *hp, int sock)
             if (sendParamsRecord(rio_writen, sock, requestId, paname[i], strlen(paname[i]),
                         (char *)(((long)hp) + paoffset[i]),
                         strlen((char *)(((long)hp) + paoffset[i]))) < 0) {
-                cout << "sendParamsRecord error" << endl;;
-                return -1;
+                ret = SENDPARAMSRECORD_ERROR;
+                LOG_ERROR("sendParamsRecord error, ret=%d", ret);
+                return ret;
             }
         }
     }
 
     // 发送空的params参数
     if (sendEmptyParamsRecord(rio_writen, sock, requestId) < 0) {
-        cout << "sendEmptyParamsRecord error" << endl;
-        return -1;
+        ret = SENDEMPTYPARAMSRECORD_ERROR;
+        LOG_ERROR("sendEmptyParamsRecord error, ret=%d", ret);
+        return ret;
     }
 
     // 继续读取请求体数据
@@ -623,16 +648,18 @@ int send_fastcgi(rio_t *rp, hhr_t *hp, int sock)
         buf = (char *)malloc(l + 1);
         memset(buf, '\0', l);
         if (rio_readnb(rp, buf, l) < 0) {
-            cout << "rio_readn error" << endl;
+            ret = RIO_READN_ERROR;
+            LOG_ERROR("rio_readn error, ret=%d", ret);
             free(buf);
-            return -1;
+            return ret;
         }
 
         // 发送stdin数据
         if (sendStdinRecord(rio_writen, sock, requestId, buf, l) < 0) {
-            cout << "sendStdinRecord error" << endl;
+            ret = SENDSTDINRECORD_ERROR;
+            LOG_ERROR("sendStdinRecord error, ret=%d", ret);
             free(buf);
-            return -1;
+            return ret;
         }
 
         free(buf);
@@ -640,8 +667,9 @@ int send_fastcgi(rio_t *rp, hhr_t *hp, int sock)
 
     // 发送空的stdin数据
     if (sendEmptyStdinRecord(rio_writen, sock, requestId) < 0) {
-        cout << "sendEmptyStdinRecord error" << endl;
-        return -1;
+        ret = SENDEMPTYSTDINRECORD_ERROR;
+        LOG_ERROR("sendEmptyStdinRecord error, ret=%d", ret);
+        return ret;
     }
 
     return 0;
@@ -659,9 +687,9 @@ int recv_fastcgi(int fd, int sock) {
 
     // 读取处理结果
     if (recvRecord(rio_readn, send_to_cli, fd, sock, requestId) < 0) {
-        cout << "recvRecord error" << endl;
-
-        return -1;
+        ret = RECVRECORD_ERROR;
+        LOG_ERROR("recvRecord error", ret=%d", ret);
+        return ret;
     }
 
     return 0;

@@ -1,0 +1,33 @@
+#ifndef ERRNO_DEFINE_H
+#define ERRNO_DEFINE_H
+
+namespace sponge
+{
+namespace common
+{
+#define SUCCESS 0
+#define MEMORY_ALLOCATION_FAILED -1
+#define PTHREAD_CREATE_FILED -2
+#define GETFL_ERROR -3
+#define SPONGE_EAGAIN -4
+#define EPOLL_ERROR -5
+#define BIND_ERROR -6
+#define LISTEN_ERROR -7
+#define GETSOCKNAME_ERROR -8
+#define WRITE_TO_CLENT_ERROR -9
+#define RIO_WRITTEN_ERROR -10
+#define ACCEPT_ERROR -11
+#define SET_SOCKET_ERROR -12
+#define INVALID_ARGUMENT -13
+#define CONNECT_ERROR -14
+#define SENDBEGINREQUESTRECORD_ERROR -15
+#define SENDPARAMSRECORD_ERROR -16
+#define SENDEMPTYPARAMSRECORD_ERROR -17
+#define SENDSTDINRECORD_ERROR -18
+#define SENDEMPTYSTDINRECORD_ERROR -19
+#define RECVRECORD_ERROR -20
+#define RIO_READN_ERROR -21
+}  // end namespace common
+}  // end namespace sponge
+
+#endif

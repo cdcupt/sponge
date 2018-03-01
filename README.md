@@ -3,39 +3,8 @@
 ---
 
 这个项目的目的是实现一个高并发的web服务器，目前在不断的完善中，更多功能敬请期待......
-## 状态代码
-
-**1XX：仅表示信息，没有1XX状态代码的定义，它们只保留给实验目的。**
-
-**2XX：成功 其他的2xx状态码的其余部分主要是供脚本处理和不经常使用**。
-
-“200” ; 服务端成功接收并处理了客户端的请求。
-
-**3XX：重定向**
-
-“301” ; 客户端所请求的URL已经移走，需要客户端重定向到其它的URL；
-
-“304” ; 客户端所请求的URL未发生变化；
-
-**4XX：客户端错误**
-
-“400” ; 客户端请求错误；
-
-“403” ; 客户端请求被服务端所禁止；
-
-“404” ; 客户端所请求的URL在服务端不存在；
-
-**5XX：服务器错误**
-
-“500” ; 服务端在处理客户端请求时出现异常；
-
-“501” ; 服务端未实现客户端请求的方法或内容；
-
-“502” ; 此为中间代理返回给客户端的出错信息，表明服务端返回给代理时出错；
-
-“503” ; 服务端由于负载过高或其它错误而无法正常响应客户端请求；
-
-“504” ; 此为中间代理返回给客户端的出错信息，表明代理连接服务端出现超时。
+## 项目简介
+sponge是一个基于reactor模式的httpd，关于reactor模式，核心主要有一个事件分离器和一个事件发生器组成，他将IO事件分离开来，然后通过回调函数异步的处理IO事件。该项目为一个能处理多用户请求以及能提供较高并发量的web服务器，目前支持GET以及POST的HTTP请求，支持静态的html请求以及CGI动态页面请求以及基于FAST-CGI的php动态页面请求。
 ## 使用说明
 编译：
 
@@ -135,3 +104,40 @@ epoll主线程将accept_request插入任务队列，由worker线程处理。
 }
 ```
 epollfd由析构函数自动释放
+
+## 2018.3.2
+完善log日志系统，更多状态返回与输出
+```c++
+class Log
+{
+ public:
+  void log(const char *level, const char *filename, const int line, const char *format, ...);
+  //返回静态实例
+  static Log &get_instance(void);
+};
+```
+相关错误状态
+```c++
+#define SUCCESS 0
+#define MEMORY_ALLOCATION_FAILED -1
+#define PTHREAD_CREATE_FILED -2
+#define GETFL_ERROR -3
+#define SPONGE_EAGAIN -4
+#define EPOLL_ERROR -5
+#define BIND_ERROR -6
+#define LISTEN_ERROR -7
+#define GETSOCKNAME_ERROR -8
+#define WRITE_TO_CLENT_ERROR -9
+#define RIO_WRITTEN_ERROR -10
+#define ACCEPT_ERROR -11
+#define SET_SOCKET_ERROR -12
+#define INVALID_ARGUMENT -13
+#define CONNECT_ERROR -14
+#define SENDBEGINREQUESTRECORD_ERROR -15
+#define SENDPARAMSRECORD_ERROR -16
+#define SENDEMPTYPARAMSRECORD_ERROR -17
+#define SENDSTDINRECORD_ERROR -18
+#define SENDEMPTYSTDINRECORD_ERROR -19
+#define RECVRECORD_ERROR -20
+#define RIO_READN_ERROR -21
+```
